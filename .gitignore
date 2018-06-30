@@ -1,3 +1,4 @@
+results/
 outputs/
 src/models/
 data/
@@ -14,3 +15,4 @@ src/yaml_generator.py
 *.zip
 *.pkl
 *.pyc
+util/*~
