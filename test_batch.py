@@ -23,7 +23,6 @@ parser.add_argument('--config', type=str, default='configs/edges2handbags_folder
 parser.add_argument('--input_folder', type=str, help="input image folder")
 parser.add_argument('--output_folder', type=str, help="output image folder")
 parser.add_argument('--checkpoint', type=str, help="checkpoint of autoencoders")
-parser.add_argument('--a2b', type=int, help="1 for a2b and others for b2a", default=1)
 parser.add_argument('--seed', type=int, default=1, help="random seed")
 parser.add_argument('--num_style',type=int, default=10, help="number of styles to sample")
 parser.add_argument('--synchronized', action='store_true', help="whether use synchronized style code or not")
@@ -33,17 +32,16 @@ parser.add_argument('--trainer', type=str, default='MUNIT', help="MUNIT|UNIT")
 
 opts = parser.parse_args()
 
-
 torch.manual_seed(opts.seed)
 torch.cuda.manual_seed(opts.seed)
 
 # Load experiment setting
 config = get_config(opts.config)
-input_dim = config['input_dim_a'] if opts.a2b else config['input_dim_b']
+input_dim = config['input_dim_a']
 
 # Setup model and data loader
 image_names = ImageFolder(opts.input_folder, transform=None, return_paths=True)
-data_loader = get_data_loader_folder(opts.input_folder, 1, False, new_size=config['new_size_a'], crop=False)
+data_loader = get_data_loader_folder(opts.input_folder, 1, False, new_size=config['new_size'], crop=False)
 
 config['vgg_model_path'] = opts.output_path
 if opts.trainer == 'MUNIT':
@@ -60,8 +58,14 @@ trainer.gen_a.load_state_dict(state_dict['a'])
 trainer.gen_b.load_state_dict(state_dict['b'])
 trainer.cuda()
 trainer.eval()
-encode = trainer.gen_a.encode if opts.a2b else trainer.gen_b.encode # encode function
-decode = trainer.gen_b.decode if opts.a2b else trainer.gen_a.decode # decode function
+
+# A -> B
+encode_a2z = trainer.gen_a.encode # encode from A
+decode_z2b = trainer.gen_b.decode # decode to B 
+
+# B -> A
+encode_b2z = trainer.gen_b.encode # encode from B
+decode_z2a = trainer.gen_a.decode # decode to A
 
 if opts.trainer == 'MUNIT':
     # Start testing
@@ -88,19 +92,37 @@ elif opts.trainer == 'UNIT':
     # Start testing
     for i, (images, names) in enumerate(zip(data_loader,image_names)):
         print(names[1])
-        images = Variable(images.cuda(), volatile=True)
-        content, _ = encode(images)
 
-        outputs = decode(content)
-        outputs = (outputs + 1) / 2.
+        # encode a to latent space
+        images = Variable(images.cuda(), volatile=True)
+        content_a, _ = encode_a2z(images)
+
+        # decode latent to b
+        outputs_b = decode_z2b(content_a)
+        outputs_b = (outputs_b + 1) / 2.
+
+        # re-encode b to latent space
+        content_b, _ = encode_b2z(outputs_b)
+
+        # decode latent to a
+        recs_a = decode_z2a(content_b)
+        recs_a = (recs_a + 1) / 2.
+        
         # path = os.path.join(opts.output_folder, 'input{:03d}_output{:03d}.jpg'.format(i, j))
         basename = os.path.basename(names[1])
         path = os.path.join(opts.output_folder,basename)
+
+        # make output folder
         if not os.path.exists(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
-        vutils.save_image(outputs.data, path, padding=0, normalize=True)
-        if not opts.output_only:
-            # also save input images
-            vutils.save_image(images.data, os.path.join(opts.output_folder, 'input{:03d}.jpg'.format(i)), padding=0, normalize=True)
+
+        # save output_b images
+        vutils.save_image(outputs_b.data, os.path.join(opts.output_folder, 'output_{}.jpg'.format(basename)), padding=0, normalize=True)
+
+        # save input images
+        vutils.save_image(images.data, os.path.join(opts.output_folder, 'input_{}.jpg'.format(basename)), padding=0, normalize=True)
+
+        # also save rec images
+        vutils.save_image(recs_a.data, os.path.join(opts.output_folder, 'rec_{}.jpg'.format(basename)), padding=0, normalize=True)
 else:
     pass
