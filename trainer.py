@@ -202,6 +202,7 @@ class UNIT_Trainer(nn.Module):
     def __init__(self, hyperparameters):
         super(UNIT_Trainer, self).__init__()
         lr = hyperparameters['lr']
+        self.ganFeatLoss = hyperparameters['dis']['ganFeatLoss']
         # Initiate the networks
         self.gen_a = VAEGen(hyperparameters['input_dim_a'], hyperparameters['gen'])  # auto-encoder for domain a
         self.gen_b = VAEGen(hyperparameters['input_dim_b'], hyperparameters['gen'])  # auto-encoder for domain b
@@ -288,6 +289,11 @@ class UNIT_Trainer(nn.Module):
         # domain-invariant perceptual loss
         self.loss_gen_vgg_a = self.compute_vgg_loss(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
         self.loss_gen_vgg_b = self.compute_vgg_loss(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
+
+        # GAN feature matching loss
+        self.loss_gen_feat_a = self.dis_a.calc_gen_feat_loss(x_a, x_aba) if self.ganFeatLoss else 0
+        self.loss_gen_feat_b = self.dis_a.calc_gen_feat_loss(x_b, x_bab) if self.ganFeatLoss else 0
+        
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_a + \
                               hyperparameters['gan_w'] * self.loss_gen_adv_b + \
@@ -300,7 +306,9 @@ class UNIT_Trainer(nn.Module):
                               hyperparameters['recon_x_cyc_w'] * self.loss_gen_cyc_x_b + \
                               hyperparameters['recon_kl_cyc_w'] * self.loss_gen_recon_kl_cyc_bab + \
                               hyperparameters['vgg_w'] * self.loss_gen_vgg_a + \
-                              hyperparameters['vgg_w'] * self.loss_gen_vgg_b
+                              hyperparameters['vgg_w'] * self.loss_gen_vgg_b + \
+                              hyperparameters['recon_feat_cyc_w'] * self.loss_gen_feat_a + \
+                              hyperparameters['recon_feat_cyc_w'] * self.loss_gen_feat_b
         self.loss_gen_total.backward()
         self.gen_opt.step()
 

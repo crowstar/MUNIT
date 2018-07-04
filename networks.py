@@ -6,6 +6,8 @@ from torch import nn
 from torch.autograd import Variable
 import torch
 import torch.nn.functional as F
+import functools
+import numpy as np
 try:
     from itertools import izip as zip
 except ImportError: # will be 3.x series
@@ -29,27 +31,40 @@ class MsImageDis(nn.Module):
         self.input_dim = input_dim
         self.downsample = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
         self.cnns = nn.ModuleList()
-        for _ in range(self.num_scales):
-            self.cnns.append(self._make_net())
+        self.ganFeatLoss = params['ganFeatLoss']
 
-    def _make_net(self):
-        dim = self.dim
-        cnn_x = []
-        cnn_x += [Conv2dBlock(self.input_dim, dim, 4, 2, 1, norm='none', activation=self.activ, pad_type=self.pad_type)]
-        for i in range(self.n_layer - 1):
-            cnn_x += [Conv2dBlock(dim, dim * 2, 4, 2, 1, norm=self.norm, activation=self.activ, pad_type=self.pad_type)]
-            dim *= 2
-        cnn_x += [nn.Conv2d(dim, 1, 1, 1, 0)]
-        cnn_x = nn.Sequential(*cnn_x)
-        return cnn_x
-
-    def forward(self, x):
-        outputs = []
-        for model in self.cnns:
-            outputs.append(model(x))
-            x = self.downsample(x)
-        return outputs
-
+        for i in range(self.num_scales):
+            netD = NLayerDiscriminator(self.input_dim, self.dim, self.n_layer, self.norm, False, activation=self.activ, pad_type=self.pad_type, getIntermFeat=self.ganFeatLoss)
+            
+            if self.ganFeatLoss:
+                for j in range(self.n_layer+1):
+                    setattr(self, 'scale'+str(i)+'_layer'+str(j), getattr(netD, 'model'+str(j)))
+            else:
+                setattr(self, 'layer'+str(i), netD.model)
+            
+    def singleD_forward(self, model, input):
+        if self.ganFeatLoss:
+            result = [input]
+            for i in range(len(model)):
+                result.append(model[i](result[-1]))
+            return result[1:]
+        else:
+            return [model(input)]
+        
+    def forward(self, input):
+        num_D = self.num_scales
+        result = []
+        input_downsampled = input
+        for i in range(num_D):
+            if self.ganFeatLoss:
+                model = [getattr(self, 'scale'+str(num_D-1-i)+'_layer'+str(j)) for j in range(self.n_layer+1)]
+            else:
+                model = getattr(self, 'layer'+str(num_D-1-i))
+            result.append(self.singleD_forward(model, input_downsampled))
+            if i != (num_D-1):
+                input_downsampled = self.downsample(input_downsampled)
+        return result
+    
     def calc_dis_loss(self, input_fake, input_real):
         # calculate the loss to train D
         outs0 = self.forward(input_fake)
@@ -57,6 +72,8 @@ class MsImageDis(nn.Module):
         loss = 0
 
         for it, (out0, out1) in enumerate(zip(outs0, outs1)):
+            out0 = out0[-1]
+            out1 = out1[-1]
             if self.gan_type == 'lsgan':
                 loss += torch.mean((out0 - 0)**2) + torch.mean((out1 - 1)**2)
             elif self.gan_type == 'nsgan':
@@ -70,9 +87,11 @@ class MsImageDis(nn.Module):
 
     def calc_gen_loss(self, input_fake):
         # calculate the loss to train G
-        outs0 = self.forward(input_fake)
+        outs0 = self.forward(input_fake)[-1]
         loss = 0
+    
         for it, (out0) in enumerate(outs0):
+            out0 = out0[-1]
             if self.gan_type == 'lsgan':
                 loss += torch.mean((out0 - 1)**2) # LSGAN
             elif self.gan_type == 'nsgan':
@@ -82,6 +101,20 @@ class MsImageDis(nn.Module):
                 assert 0, "Unsupported GAN type: {}".format(self.gan_type)
         return loss
 
+    def calc_gen_feat_loss(self, input, input_rec):
+        # calculate GAN feature matching loss
+        outs0 = self.forward(input)
+        outs1 = self.forward(input_rec)
+
+        loss = 0
+        
+        feat_weights = 4.0 / self.n_layer
+        D_weights = 1.0 / self.num_scales
+        for i in range(self.num_scales):
+            for j in range(len(outs0[i])-1):
+                loss += D_weights * feat_weights * torch.mean((outs0[i][j] - outs1[i][j])**2)
+        return loss
+                
 ##################################################################################
 # Generator
 ##################################################################################
@@ -495,3 +528,49 @@ class LayerNorm(nn.Module):
             shape = [1, -1] + [1] * (x.dim() - 2)
             x = x * self.gamma.view(*shape) + self.beta.view(*shape)
         return x
+
+############################################
+# Defines patchGAN n_layer discriminator
+############################################
+class NLayerDiscriminator(nn.Module):
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer='none', use_sigmoid=False, activation='lrelu', pad_type='zero', getIntermFeat=False):
+        super(NLayerDiscriminator, self).__init__()
+        self.n_layers = n_layers
+        self.getIntermFeat = getIntermFeat
+
+        kw = 4
+        padw = 1
+        
+        sequence = [[Conv2dBlock(input_nc, ndf, 4, 2, 1, norm='none', activation=activation, pad_type=pad_type)]]
+
+        nf_mult = 1
+        nf_mult_prev = 1
+        for n in range(1, n_layers):
+            nf_mult_prev = nf_mult
+            nf_mult = min(2**n, 8)
+            sequence += [[Conv2dBlock(nf_mult_prev*ndf, ndf*nf_mult, 4, 2, 1, norm=norm_layer, activation=activation, pad_type=pad_type)]]
+
+        sequence += [[nn.Conv2d(ndf * nf_mult, 1, 1, 1, 0)]]
+
+        if use_sigmoid:
+            sequence += [[nn.Sigmoid()]]
+
+        if getIntermFeat:
+            for n in range(len(sequence)):
+                setattr(self, 'model'+str(n), nn.Sequential(*sequence[n]))
+        else:
+            sequence_stream = []
+            for n in range(len(sequence)):
+                sequence_stream += sequence[n]
+            self.model = nn.Sequential(*sequence_stream)
+
+    def forward(self, input):
+        if self.getIntermFeat:
+            res = [input]
+            for n in range(self.n_layers+2):
+                model = getattr(self, 'model'+str(n))
+                res.append(model(res[-1]))
+            return res[1:]
+        else:
+            return self.model(input)
+
