@@ -87,7 +87,7 @@ class MsImageDis(nn.Module):
 
     def calc_gen_loss(self, input_fake):
         # calculate the loss to train G
-        outs0 = self.forward(input_fake)[-1]
+        outs0 = self.forward(input_fake)
         loss = 0
     
         for it, (out0) in enumerate(outs0):
