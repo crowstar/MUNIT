@@ -87,7 +87,7 @@ class NLayerDiscriminator(nn.Module):
             nn.LeakyReLU(0.2, True)
         ]]
 
-        sequence += [[nn.Conv2d(nf, 1, kernel_size=kw, stride=1, padding=padw)]]
+        sequence += [[nn.Conv2d(nf, 1, kernel_size=1, stride=1, padding=0)]]
 
         if use_sigmoid:
             sequence += [[nn.Sigmoid()]]
