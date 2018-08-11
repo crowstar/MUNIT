@@ -30,7 +30,7 @@ parser.add_argument('--output_folder', type=str, help="output image folder")
 parser.add_argument('--checkpoint', type=str, help="checkpoint of autoencoders")
 parser.add_argument('--seed', type=int, default=1, help="random seed")
 parser.add_argument('--output_path', type=str, default='.', help="path for logs, checkpoints, and VGG model weight")
-parser.add_argument('--stream', type=str, default='full', help='toggles only generating a2b, b2a, or full stream. [a2b|b2a|full]')
+parser.add_argument('--stream', type=str, default='full', help='toggles generating a2b or b2a stream. [a2b|b2a]')
 
 opts = parser.parse_args()
 
@@ -42,15 +42,12 @@ config = get_config(opts.config)
 input_dim = config['input_dim_a']
 
 # Setup data directories
-folder_A = os.path.join(opts.input_folder, 'testA')
-folder_B = os.path.join(opts.input_folder, 'testB')
+folder = os.path.join(opts.input_folder)
 
 # Setup data loaders
-names_A = ImageFolder(folder_A, transform=None, return_paths=True)
-names_B = ImageFolder(folder_B, transform=None, return_paths=True)
+names = ImageFolder(folder, transform=None, return_paths=True)
 
-data_loader_A = get_data_loader_folder(folder_A, 1, False, new_size=config['new_size'], crop=False)
-data_loader_B = get_data_loader_folder(folder_B, 1, False, new_size=config['new_size'], crop=False)
+data_loader = get_data_loader_folder(folder, 1, False, new_size=config['new_size'], crop=False)
 
 # Setup model
 config['vgg_model_path'] = opts.output_path
@@ -58,6 +55,7 @@ config['vgg_model_path'] = opts.output_path
 trainer = UNIT_Trainer(config)
 
 state_dict = torch.load(opts.checkpoint)
+
 trainer.gen_a.load_state_dict(state_dict['a'])
 trainer.gen_b.load_state_dict(state_dict['b'])
 trainer.cuda()
@@ -76,60 +74,38 @@ web_dir = os.path.join(opts.output_folder, 'test_latest')
 webpage = html.HTML(web_dir, 'Experiment = %s, Phase = Test' % opts.output_folder)
 
 # Start testing
-for (real_A, name_A, real_B, name_B) in zip(data_loader_A, names_A, data_loader_B, names_B):
-    print([name_A[1], name_B[1]])
+for (real, name) in zip(data_loader, names):
+    print(name[1])
 
     # content_b_A means we started with image A, and the latent has been calculated from b->z
     
     # real_A -> Z -> fake_B
     with torch.no_grad():
-        if opts.stream == 'full' or 'a2b': 
-            real_A =  real_A.cuda()
+        if opts.stream == 'a2b': 
+            real_A =  real.cuda()
             content_a_A, _ = encode_a2z(real_A)
             fake_B = decode_z2b(content_a_A)
 
-        if opts.stream == 'full':
-            # fake_B -> Z -> rec_A
-            content_b_A, _ = encode_b2z(fake_B)
-            rec_A = decode_z2a(content_b_A)
-
-        if opts.stream == 'full' or 'b2a':
+        if opts.stream == 'b2a':
             # real_B -> Z -> fake_A
-            real_B = real_B.cuda()
+            real_B = real.cuda()
             content_b_B, _ = encode_b2z(real_B)
             fake_A = decode_z2a(content_b_B)
 
-        if opts.stream == 'full':
-            # fake_A -> Z -> rec_B
-            content_a_B, _ = encode_a2z(fake_A)
-            rec_B = decode_z2b(content_a_B)
-
-    basename = os.path.basename(name_A[1])
+    basename = os.path.basename(name[1])
 
     
     # make dict of output images to be saved to site
     visuals = OrderedDict()
-    if opts.stream == 'full' or 'a2b':
+    if opts.stream == 'a2b':
         visuals['real_A'] = real_A.data
         visuals['fake_B'] = fake_B.data
-    if opts.stream == 'full' or 'b2a':
+    if opts.stream == 'b2a':
         visuals['real_B'] = real_B.data
         visuals['fake_A'] = fake_A.data
-    if opts.stream == 'full':
-        visuals['rec_B'] = rec_B.data
-        visuals['rec_A'] = rec_A.data
         
     img_path = os.path.join(opts.output_folder,basename)
     save_images(webpage, visuals, img_path, aspect_ratio=1, width=256)
 
 webpage.save()
 
-
-    # save output_b images
-    #vutils.save_image(outputs_b.data, os.path.join(opts.output_folder, 'output_{}.jpg'.format(basename)), padding=0, normalize=True)
-
-    # save input images
-    #vutils.save_image(images.data, os.path.join(opts.output_folder, 'input_{}.jpg'.format(basename)), padding=0, normalize=True)
-
-    # also save rec images
-    #vutils.save_image(recs_a.data, os.path.join(opts.output_folder, 'rec_{}.jpg'.format(basename)), padding=0, normalize=True)
